@@ -1,1 +1,78 @@
-
+proxies:
+  - name: ce.are1.17:08-22-06.2
+    server: support.zoom.us
+    port: 443
+    type: trojan
+    password: kuota_15_dec
+    skip-cert-verify: true
+    sni: zoomgov.hmhm1.my.id
+    network: ws
+    ws-opts:
+      path: /trojan
+      headers:
+        Host: heen-1.hmhm1.my.id
+    udp: true
+  - name: ce.lin1.17:08-22-06.5
+    server: support.zoom.us
+    port: 443
+    type: trojan
+    password: kuota_15_dec
+    skip-cert-verify: true
+    sni: zoomgov.hmhm5.my.id
+    network: ws
+    ws-opts:
+      path: /trojan
+      headers:
+        Host: heen-5.hmhm5.my.id
+    udp: true
+  - name: ce.med1.17:08-22-06.0
+    server: support.zoom.us
+    port: 443
+    type: trojan
+    password: kuota_15_dec
+    skip-cert-verify: true
+    sni: zoomgov.hmhm6.my.id
+    network: ws
+    ws-opts:
+      path: /trojan
+      headers:
+        Host: heen-6.hmhm6.my.id
+    udp: true
+  - name: ce.are2.17:08-22-06.1
+    server: support.zoom.us
+    port: 443
+    type: trojan
+    password: kuota_15_dec
+    skip-cert-verify: true
+    sni: zoomgov.hmhm2.my.id
+    network: ws
+    ws-opts:
+      path: /trojan
+      headers:
+        Host: heen-2.hmhm2.my.id
+    udp: true
+  - name: ce.awa1.17:08-22-06.4
+    server: support.zoom.us
+    port: 443
+    type: trojan
+    password: kuota_15_dec
+    skip-cert-verify: true
+    sni: zoomgov.hmhm3.my.id
+    network: ws
+    ws-opts:
+      path: /trojan
+      headers:
+        Host: heen-3.hmhm3.my.id
+    udp: true
+proxy-groups:
+  - name: BEST-PING
+    type: url-test
+    url: http://hi.bonds.id/ping
+    interval: 300
+    tolerance: 50
+    proxies:
+      - ce.are1.17:08-22-06.2
+      - ce.lin1.17:08-22-06.5
+      - ce.med1.17:08-22-06.0
+      - ce.are2.17:08-22-06.1
+      - ce.awa1.17:08-22-06.4
