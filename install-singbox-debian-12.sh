@@ -46,6 +46,10 @@ timedatectl set-timezone Asia/Jakarta
 apt-get update
 apt-get install -y curl wget unzip zip socat ca-certificates gnupg openssl nginx certbot ufw jq mtr-tiny dnsutils iproute2 net-tools procps
 
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+apt-get install -y nodejs
+npm install -g pm2
+
 mkdir -p /etc/apt/keyrings
 curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc
 chmod a+r /etc/apt/keyrings/sagernet.asc
