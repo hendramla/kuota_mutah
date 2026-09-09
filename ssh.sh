@@ -3,17 +3,12 @@
 set -Eeuo pipefail
 
 # ============================================================
-# SSH + WS + WSS + DROPBEAR + SQUID + OPENVPN + BADVPN
+# SSH + WEBSOCKET + TLS + DROPBEAR + SQUID + OPENVPN + BADVPN
 # Debian 12
-#
-# Input hanya DOMAIN
-# Default SSH user:
-# Username : mashen
-# Password : mashen
 # ============================================================
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: Script harus dijalankan sebagai root."
+    echo "ERROR: Jalankan script sebagai root."
     exit 1
 fi
 
@@ -26,29 +21,60 @@ echo "============================================================"
 echo
 
 # ============================================================
-# INPUT DOMAIN
-#
-# /dev/tty digunakan supaya tetap bisa input saat:
-# curl ... | bash
-# wget ... | bash
-# bash <(curl ...)
+# INPUT DOMAIN - FIX UNTUK SCRIPT GITHUB
 # ============================================================
 
-printf "Masukkan domain: " > /dev/tty
-IFS= read -r DOMAIN < /dev/tty
+DOMAIN=""
 
-DOMAIN="$(printf '%s' "$DOMAIN" | tr -d '\r\n ')"
+# Bisa juga menerima domain sebagai argumen:
+# bash install.sh domain.com
+if [ "${1:-}" != "" ]; then
+    DOMAIN="$1"
+fi
+
+# Jika tidak diberikan sebagai argumen,
+# baca langsung dari terminal /dev/tty.
+if [ -z "$DOMAIN" ]; then
+
+    if [ -e /dev/tty ]; then
+
+        exec 3<>/dev/tty
+
+        while [ -z "$DOMAIN" ]; do
+            printf "Masukkan domain: " >&3
+            IFS= read -r DOMAIN <&3 || true
+
+            DOMAIN="$(printf '%s' "$DOMAIN" | tr -d '\r\n[:space:]')"
+
+            if [ -z "$DOMAIN" ]; then
+                echo "Domain tidak boleh kosong." >&3
+            fi
+        done
+
+    else
+
+        echo
+        echo "ERROR: Terminal /dev/tty tidak tersedia."
+        echo
+        echo "Jalankan dengan:"
+        echo "bash install.sh domainanda.com"
+        echo
+        exit 1
+
+    fi
+
+fi
+
 DOMAIN="${DOMAIN#http://}"
 DOMAIN="${DOMAIN#https://}"
 DOMAIN="${DOMAIN%%/*}"
+DOMAIN="${DOMAIN%.}"
 
-if [ -z "$DOMAIN" ]; then
-    echo "Domain tidak boleh kosong."
-    exit 1
-fi
-
-if ! printf '%s' "$DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; then
-    echo "Format domain tidak valid: $DOMAIN"
+if ! printf '%s' "$DOMAIN" \
+    | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$'
+then
+    echo
+    echo "ERROR: Format domain tidak valid: $DOMAIN"
     exit 1
 fi
 
@@ -65,8 +91,10 @@ echo "Username : $USERNAME"
 echo "Password : $PASSWORD"
 echo
 
+sleep 2
+
 # ============================================================
-# DETEKSI OS
+# CHECK DEBIAN
 # ============================================================
 
 if [ -f /etc/os-release ]; then
@@ -74,7 +102,12 @@ if [ -f /etc/os-release ]; then
 fi
 
 if [ "${ID:-}" != "debian" ]; then
-    echo "PERINGATAN: Script dibuat untuk Debian 12."
+    echo "ERROR: Script ini dibuat untuk Debian 12."
+    exit 1
+fi
+
+if [ "${VERSION_ID:-}" != "12" ]; then
+    echo "PERINGATAN: Debian terdeteksi versi ${VERSION_ID:-unknown}."
 fi
 
 # ============================================================
@@ -86,8 +119,14 @@ timedatectl set-timezone Asia/Jakarta || true
 export DEBIAN_FRONTEND=noninteractive
 
 # ============================================================
-# UPDATE SYSTEM
+# PACKAGE
 # ============================================================
+
+echo
+echo "============================================================"
+echo " INSTALL PACKAGE"
+echo "============================================================"
+echo
 
 apt-get update
 
@@ -131,8 +170,9 @@ apt-get install -y \
 
 echo
 echo "============================================================"
-echo " SETUP SSH USER"
+echo " CREATE SSH ACCOUNT"
 echo "============================================================"
+echo
 
 if id "$USERNAME" >/dev/null 2>&1; then
 
@@ -141,8 +181,8 @@ if id "$USERNAME" >/dev/null 2>&1; then
 else
 
     useradd \
-        --create-home \
-        --shell /bin/bash \
+        -m \
+        -s /bin/bash \
         "$USERNAME"
 
     echo "$USERNAME:$PASSWORD" | chpasswd
@@ -155,45 +195,51 @@ fi
 
 echo
 echo "============================================================"
-echo " SETUP OPENSSH"
+echo " SETUP OPENSSH PORT 22"
 echo "============================================================"
+echo
 
-cp /etc/ssh/sshd_config \
-   "/etc/ssh/sshd_config.backup.$(date +%s)" || true
+cp \
+    /etc/ssh/sshd_config \
+    "/etc/ssh/sshd_config.backup.$(date +%s)"
 
-sed -i '/^[[:space:]]*Port[[:space:]]/d' \
+sed -i \
+    '/^[[:space:]]*Port[[:space:]]/d' \
     /etc/ssh/sshd_config
 
-sed -i '/^[[:space:]]*PasswordAuthentication[[:space:]]/d' \
+sed -i \
+    '/^[[:space:]]*PasswordAuthentication[[:space:]]/d' \
     /etc/ssh/sshd_config
 
-sed -i '/^[[:space:]]*PermitRootLogin[[:space:]]/d' \
+sed -i \
+    '/^[[:space:]]*PermitRootLogin[[:space:]]/d' \
     /etc/ssh/sshd_config
 
-sed -i '/^[[:space:]]*UsePAM[[:space:]]/d' \
+sed -i \
+    '/^[[:space:]]*UsePAM[[:space:]]/d' \
     /etc/ssh/sshd_config
 
 cat >> /etc/ssh/sshd_config <<'EOF'
 
-# ========================================
-# SSH PREMIUM
-# ========================================
+# =========================================
+# SSH PREMIUM CONFIG
+# =========================================
 
 Port 22
 
 PasswordAuthentication yes
+
 UsePAM yes
 
 PermitRootLogin prohibit-password
 
+TCPKeepAlive yes
+
 ClientAliveInterval 60
 ClientAliveCountMax 3
 
-TCPKeepAlive yes
-
 MaxSessions 1000
 MaxStartups 1000:30:2000
-
 EOF
 
 sshd -t
@@ -202,13 +248,14 @@ systemctl enable ssh
 systemctl restart ssh
 
 # ============================================================
-# DROPBEAR 442
+# DROPBEAR PORT 442
 # ============================================================
 
 echo
 echo "============================================================"
-echo " SETUP DROPBEAR :442"
+echo " SETUP DROPBEAR PORT 442"
 echo "============================================================"
+echo
 
 cat > /etc/default/dropbear <<'EOF'
 NO_START=0
@@ -228,17 +275,20 @@ systemctl enable dropbear
 systemctl restart dropbear
 
 # ============================================================
-# SSH WEBSOCKET
+# SSH WEBSOCKET NODE.JS
 # ============================================================
 
 echo
 echo "============================================================"
 echo " INSTALL SSH WEBSOCKET"
 echo "============================================================"
+echo
 
 mkdir -p /opt/ssh-websocket
 
-cat > /opt/ssh-websocket/package.json <<'EOF'
+cd /opt/ssh-websocket
+
+cat > package.json <<'EOF'
 {
   "name": "ssh-websocket",
   "version": "1.0.0",
@@ -248,8 +298,6 @@ cat > /opt/ssh-websocket/package.json <<'EOF'
   }
 }
 EOF
-
-cd /opt/ssh-websocket
 
 npm install \
     --omit=dev \
@@ -272,8 +320,7 @@ const SSH_PORT = 22;
 const server = http.createServer((req, res) => {
 
     res.writeHead(200, {
-        'Content-Type': 'text/plain',
-        'Connection': 'keep-alive'
+        'Content-Type': 'text/plain'
     });
 
     res.end('SSH WebSocket Server\n');
@@ -307,7 +354,7 @@ wss.on('connection', (ws) => {
 
     let closed = false;
 
-    function closeEverything() {
+    function closeAll() {
 
         if (closed) {
             return;
@@ -316,13 +363,11 @@ wss.on('connection', (ws) => {
         closed = true;
 
         try {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.close();
-            }
+            ssh.destroy();
         } catch (_) {}
 
         try {
-            ssh.destroy();
+            ws.terminate();
         } catch (_) {}
 
     }
@@ -340,25 +385,18 @@ wss.on('connection', (ws) => {
         ssh.on('data', (data) => {
 
             if (ws.readyState === WebSocket.OPEN) {
-
-                ws.send(
-                    data,
-                    {
-                        binary: true
-                    }
-                );
-
+                ws.send(data);
             }
 
         });
 
     });
 
-    ws.on('close', closeEverything);
-    ws.on('error', closeEverything);
+    ws.on('close', closeAll);
+    ws.on('error', closeAll);
 
-    ssh.on('close', closeEverything);
-    ssh.on('error', closeEverything);
+    ssh.on('close', closeAll);
+    ssh.on('error', closeAll);
 
 });
 
@@ -366,16 +404,18 @@ server.listen(
     LISTEN_PORT,
     LISTEN_HOST,
     () => {
+
         console.log(
-            `SSH WebSocket listening at ${LISTEN_HOST}:${LISTEN_PORT}`
+            `SSH WebSocket running on ${LISTEN_HOST}:${LISTEN_PORT}`
         );
+
     }
 );
 EOF
 
 cat > /etc/systemd/system/ssh-websocket.service <<'EOF'
 [Unit]
-Description=SSH WebSocket Tunnel
+Description=SSH WebSocket
 After=network-online.target ssh.service
 Wants=network-online.target
 Requires=ssh.service
@@ -399,39 +439,33 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+
 systemctl enable ssh-websocket
 systemctl restart ssh-websocket
 
 # ============================================================
-# STOP NGINX + SSLH SEBELUM CERTBOT
-# ============================================================
-
-systemctl stop sslh 2>/dev/null || true
-systemctl stop nginx 2>/dev/null || true
-
-# ============================================================
-# UFW TEMPORARY PORT 80
-# ============================================================
-
-ufw allow 22/tcp >/dev/null 2>&1 || true
-ufw allow 80/tcp >/dev/null 2>&1 || true
-
-# ============================================================
-# LET'S ENCRYPT
+# CERTBOT
 # ============================================================
 
 echo
 echo "============================================================"
-echo " REQUEST SSL CERTIFICATE"
+echo " INSTALL SSL CERTIFICATE"
 echo "============================================================"
+echo
+
+systemctl stop nginx 2>/dev/null || true
+systemctl stop sslh 2>/dev/null || true
+
+# Pastikan port 80 tidak sedang dipakai service lain.
+fuser -k 80/tcp 2>/dev/null || true
 
 if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
 
     certbot certonly \
         --standalone \
         --preferred-challenges http \
-        --non-interactive \
         --agree-tos \
+        --non-interactive \
         --register-unsafely-without-email \
         -d "$DOMAIN"
 
@@ -441,30 +475,28 @@ if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
 
     echo
     echo "============================================================"
-    echo " CERTIFICATE GAGAL"
+    echo " SSL CERTIFICATE GAGAL"
     echo "============================================================"
     echo
     echo "Pastikan:"
-    echo "1. Domain $DOMAIN mengarah ke IP VPS."
-    echo "2. Port TCP 80 terbuka."
-    echo "3. Cloudflare gunakan DNS Only saat penerbitan sertifikat."
+    echo "1. $DOMAIN mengarah ke IP VPS."
+    echo "2. Cloudflare sementara DNS Only."
+    echo "3. Port 80 tidak diblokir provider/firewall."
     echo
 
     exit 1
+
 fi
 
 # ============================================================
 # NGINX
-#
-# :80               = WS non-TLS
-# 127.0.0.1:8443    = WSS backend
-# :443               = SSLH frontend
 # ============================================================
 
 echo
 echo "============================================================"
-echo " SETUP NGINX WS/WSS"
+echo " SETUP NGINX WS + WSS"
 echo "============================================================"
+echo
 
 rm -f /etc/nginx/sites-enabled/default
 rm -f /etc/nginx/sites-available/default
@@ -492,15 +524,14 @@ server {
         proxy_set_header Connection \$connection_upgrade;
 
         proxy_set_header Host \$host;
+
         proxy_set_header X-Real-IP \$remote_addr;
 
         proxy_set_header X-Forwarded-For \
             \$proxy_add_x_forwarded_for;
 
-        proxy_set_header X-Forwarded-Proto \
-            \$scheme;
-
         proxy_connect_timeout 60s;
+
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
 
@@ -510,6 +541,7 @@ server {
         proxy_pass http://127.0.0.1:10080;
 
     }
+
 }
 
 server {
@@ -527,6 +559,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     ssl_session_cache shared:SSL:50m;
+
     ssl_session_timeout 1d;
 
     location / {
@@ -537,14 +570,14 @@ server {
         proxy_set_header Connection \$connection_upgrade;
 
         proxy_set_header Host \$host;
+
         proxy_set_header X-Real-IP \$remote_addr;
 
         proxy_set_header X-Forwarded-For \
             \$proxy_add_x_forwarded_for;
 
-        proxy_set_header X-Forwarded-Proto https;
-
         proxy_connect_timeout 60s;
+
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
 
@@ -554,6 +587,7 @@ server {
         proxy_pass http://127.0.0.1:10080;
 
     }
+
 }
 EOF
 
@@ -565,6 +599,7 @@ cat > /etc/nginx/conf.d/ssh-tuning.conf <<'EOF'
 client_max_body_size 100m;
 
 proxy_connect_timeout 60s;
+
 proxy_send_timeout 86400s;
 proxy_read_timeout 86400s;
 
@@ -585,12 +620,7 @@ echo
 echo "============================================================"
 echo " SETUP SQUID"
 echo "============================================================"
-
-htpasswd \
-    -bc \
-    /etc/squid/passwd \
-    "$USERNAME" \
-    "$PASSWORD"
+echo
 
 SQUID_AUTH="$(find /usr/lib \
     -type f \
@@ -600,13 +630,16 @@ SQUID_AUTH="$(find /usr/lib \
 
 if [ -z "$SQUID_AUTH" ]; then
 
-    echo "basic_ncsa_auth Squid tidak ditemukan."
+    echo "ERROR: basic_ncsa_auth tidak ditemukan."
     exit 1
 
 fi
 
-cp /etc/squid/squid.conf \
-   "/etc/squid/squid.conf.backup.$(date +%s)" || true
+htpasswd \
+    -bc \
+    /etc/squid/passwd \
+    "$USERNAME" \
+    "$PASSWORD"
 
 cat > /etc/squid/squid.conf <<EOF
 http_port 3128
@@ -622,9 +655,11 @@ auth_param basic credentialsttl 24 hours
 acl authenticated proxy_auth REQUIRED
 
 http_access allow authenticated
+
 http_access deny all
 
 forwarded_for delete
+
 via off
 
 cache deny all
@@ -645,6 +680,7 @@ echo
 echo "============================================================"
 echo " SETUP OPENVPN"
 echo "============================================================"
+echo
 
 mkdir -p /etc/openvpn/server
 
@@ -671,13 +707,16 @@ EASYRSA_CERT_EXPIRE=3650 \
     server \
     nopass
 
-cp pki/ca.crt \
+cp \
+    pki/ca.crt \
     /etc/openvpn/server/ca.crt
 
-cp pki/issued/server.crt \
+cp \
+    pki/issued/server.crt \
     /etc/openvpn/server/server.crt
 
-cp pki/private/server.key \
+cp \
+    pki/private/server.key \
     /etc/openvpn/server/server.key
 
 openvpn \
@@ -693,7 +732,7 @@ PAM_PLUGIN="$(find /usr/lib \
 
 if [ -z "$PAM_PLUGIN" ]; then
 
-    echo "OpenVPN PAM plugin tidak ditemukan."
+    echo "ERROR: OpenVPN PAM plugin tidak ditemukan."
     exit 1
 
 fi
@@ -704,6 +743,7 @@ fi
 
 cat > /etc/openvpn/server/udp1194.conf <<EOF
 port 1194
+
 proto udp
 
 dev tun0
@@ -713,7 +753,9 @@ topology subnet
 server 10.8.0.0 255.255.255.0
 
 ca /etc/openvpn/server/ca.crt
+
 cert /etc/openvpn/server/server.crt
+
 key /etc/openvpn/server/server.key
 
 dh none
@@ -721,6 +763,7 @@ dh none
 tls-crypt /etc/openvpn/server/tls-crypt.key
 
 verify-client-cert none
+
 username-as-common-name
 
 plugin $PAM_PLUGIN login
@@ -734,14 +777,17 @@ data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
 keepalive 10 120
 
 persist-key
+
 persist-tun
 
 user nobody
+
 group nogroup
 
 push "redirect-gateway def1 bypass-dhcp"
 
 push "dhcp-option DNS 1.1.1.1"
+
 push "dhcp-option DNS 1.0.0.1"
 
 status /var/log/openvpn-udp-status.log
@@ -750,9 +796,8 @@ verb 3
 EOF
 
 # ============================================================
-# OPENVPN TCP BACKEND
-#
-# SSLH :443 -> 127.0.0.1:1195
+# OPENVPN TCP BACKEND 1195
+# EXTERNAL PORT 443 MELALUI SSLH
 # ============================================================
 
 cat > /etc/openvpn/server/tcp443.conf <<EOF
@@ -769,7 +814,9 @@ topology subnet
 server 10.9.0.0 255.255.255.0
 
 ca /etc/openvpn/server/ca.crt
+
 cert /etc/openvpn/server/server.crt
+
 key /etc/openvpn/server/server.key
 
 dh none
@@ -777,6 +824,7 @@ dh none
 tls-crypt /etc/openvpn/server/tls-crypt.key
 
 verify-client-cert none
+
 username-as-common-name
 
 plugin $PAM_PLUGIN login
@@ -790,14 +838,17 @@ data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
 keepalive 10 120
 
 persist-key
+
 persist-tun
 
 user nobody
+
 group nogroup
 
 push "redirect-gateway def1 bypass-dhcp"
 
 push "dhcp-option DNS 1.1.1.1"
+
 push "dhcp-option DNS 1.0.0.1"
 
 status /var/log/openvpn-tcp-status.log
@@ -814,21 +865,24 @@ systemctl restart openvpn-server@udp1194
 systemctl restart openvpn-server@tcp443
 
 # ============================================================
-# SYSCTL
+# NETWORK TUNING
 # ============================================================
 
 echo
 echo "============================================================"
 echo " NETWORK TUNING"
 echo "============================================================"
+echo
 
 cat > /etc/sysctl.d/99-ssh-vpn.conf <<'EOF'
 net.ipv4.ip_forward=1
 
 net.core.default_qdisc=fq
+
 net.ipv4.tcp_congestion_control=bbr
 
 net.core.somaxconn=65535
+
 net.core.netdev_max_backlog=65535
 
 net.ipv4.tcp_max_syn_backlog=65535
@@ -836,7 +890,9 @@ net.ipv4.tcp_max_syn_backlog=65535
 net.ipv4.tcp_fin_timeout=15
 
 net.ipv4.tcp_keepalive_time=600
+
 net.ipv4.tcp_keepalive_intvl=30
+
 net.ipv4.tcp_keepalive_probes=5
 
 net.ipv4.ip_local_port_range=1024 65535
@@ -855,7 +911,7 @@ IFACE="$(ip -4 route show default \
 
 if [ -z "$IFACE" ]; then
 
-    echo "Interface internet tidak ditemukan."
+    echo "ERROR: Interface internet tidak ditemukan."
     exit 1
 
 fi
@@ -896,26 +952,26 @@ iptables \
 
 iptables \
     -C FORWARD \
-    -d 10.8.0.0/24 \
-    -m conntrack \
-    --ctstate ESTABLISHED,RELATED \
+    -s 10.9.0.0/24 \
     -j ACCEPT \
     2>/dev/null || \
 iptables \
     -A FORWARD \
-    -d 10.8.0.0/24 \
-    -m conntrack \
-    --ctstate ESTABLISHED,RELATED \
+    -s 10.9.0.0/24 \
     -j ACCEPT
 
 iptables \
     -C FORWARD \
-    -s 10.9.0.0/24 \
+    -d 10.8.0.0/24 \
+    -m conntrack \
+    --ctstate ESTABLISHED,RELATED \
     -j ACCEPT \
     2>/dev/null || \
 iptables \
     -A FORWARD \
-    -s 10.9.0.0/24 \
+    -d 10.8.0.0/24 \
+    -m conntrack \
+    --ctstate ESTABLISHED,RELATED \
     -j ACCEPT
 
 iptables \
@@ -936,15 +992,13 @@ netfilter-persistent save
 
 # ============================================================
 # SSLH PORT 443
-#
-# HTTPS/WSS -> NGINX 127.0.0.1:8443
-# OpenVPN   -> 127.0.0.1:1195
 # ============================================================
 
 echo
 echo "============================================================"
-echo " SETUP PORT 443 MULTIPLEXER"
+echo " SETUP PORT 443"
 echo "============================================================"
+echo
 
 systemctl stop sslh 2>/dev/null || true
 
@@ -957,17 +1011,19 @@ DAEMON_OPTS="--user sslh --listen 0.0.0.0:443 --openvpn 127.0.0.1:1195 --tls 127
 EOF
 
 systemctl daemon-reload
+
 systemctl enable sslh
 systemctl restart sslh
 
 # ============================================================
-# BADVPN UDPGW
+# BADVPN
 # ============================================================
 
 echo
 echo "============================================================"
-echo " BUILD BADVPN UDPGW"
+echo " INSTALL BADVPN UDPGW"
 echo "============================================================"
+echo
 
 rm -rf /tmp/badvpn-src
 
@@ -978,7 +1034,6 @@ git clone \
 
 cd /tmp/badvpn-src
 
-rm -rf build
 mkdir -p build
 
 cd build
@@ -997,7 +1052,7 @@ BADVPN_BIN="$(find . \
 
 if [ -z "$BADVPN_BIN" ]; then
 
-    echo "Build BadVPN gagal."
+    echo "ERROR: Build BadVPN gagal."
     exit 1
 
 fi
@@ -1008,7 +1063,7 @@ install \
     /usr/local/bin/badvpn-udpgw
 
 # ============================================================
-# BADVPN SERVICES
+# BADVPN SERVICE
 # ============================================================
 
 for PORT in \
@@ -1028,12 +1083,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-ExecStart=/usr/local/bin/badvpn-udpgw \
---listen-addr 0.0.0.0:$PORT \
---max-clients 1000 \
---max-connections-for-client 20
+ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 0.0.0.0:$PORT --max-clients 1000 --max-connections-for-client 20
 
 Restart=always
+
 RestartSec=2
 
 LimitNOFILE=1048576
@@ -1055,6 +1108,7 @@ for PORT in \
 do
 
     systemctl enable "badvpn-${PORT}.service"
+
     systemctl restart "badvpn-${PORT}.service"
 
 done
@@ -1065,39 +1119,39 @@ done
 
 echo
 echo "============================================================"
-echo " SETUP FIREWALL"
+echo " FIREWALL"
 echo "============================================================"
+echo
 
 ufw --force reset
 
 ufw default deny incoming
 ufw default allow outgoing
 
-# OpenSSH
 ufw allow 22/tcp
 
-# Dropbear
 ufw allow 442/tcp
 
-# WS
 ufw allow 80/tcp
 
-# WSS / OpenVPN TCP multiplexer
 ufw allow 443/tcp
 
-# OpenVPN UDP
 ufw allow 1194/udp
 
-# Squid
 ufw allow 3128/tcp
+
 ufw allow 8000/tcp
+
 ufw allow 8080/tcp
 
-# BadVPN
 ufw allow 7100/udp
+
 ufw allow 7200/udp
+
 ufw allow 7300/udp
+
 ufw allow 7400/udp
+
 ufw allow 7500/udp
 
 # UDP CUSTOM
@@ -1106,22 +1160,20 @@ ufw allow 1:65535/udp
 ufw --force enable
 
 # ============================================================
-# CREATE OVPN CLIENT FILES
+# OVPN CONFIG
 # ============================================================
 
 echo
 echo "============================================================"
-echo " CREATE OPENVPN CONFIG"
+echo " GENERATE OPENVPN CLIENT CONFIG"
 echo "============================================================"
+echo
 
 mkdir -p /root/ovpn
 
 CA_CERT="$(cat /etc/openvpn/server/ca.crt)"
-TLS_CRYPT="$(cat /etc/openvpn/server/tls-crypt.key)"
 
-# ============================================================
-# OVPN UDP 1194
-# ============================================================
+TLS_CRYPT="$(cat /etc/openvpn/server/tls-crypt.key)"
 
 cat > /root/ovpn/openvpn-1194.ovpn <<EOF
 client
@@ -1137,11 +1189,13 @@ resolv-retry infinite
 nobind
 
 persist-key
+
 persist-tun
 
 remote-cert-tls server
 
 auth-user-pass
+
 auth-nocache
 
 auth SHA256
@@ -1159,10 +1213,6 @@ $TLS_CRYPT
 </tls-crypt>
 EOF
 
-# ============================================================
-# OVPN TCP 443
-# ============================================================
-
 cat > /root/ovpn/openvpn-443.ovpn <<EOF
 client
 
@@ -1177,11 +1227,13 @@ resolv-retry infinite
 nobind
 
 persist-key
+
 persist-tun
 
 remote-cert-tls server
 
 auth-user-pass
+
 auth-nocache
 
 auth SHA256
@@ -1202,46 +1254,54 @@ EOF
 chmod 600 /root/ovpn/*.ovpn
 
 # ============================================================
-# CERTBOT AUTO RENEW HOOK
+# CERTBOT RENEW
 # ============================================================
 
 mkdir -p \
     /etc/letsencrypt/renewal-hooks/deploy
 
 cat > \
-/etc/letsencrypt/renewal-hooks/deploy/restart-ssh-tls.sh <<'EOF'
+/etc/letsencrypt/renewal-hooks/deploy/restart-services.sh <<'EOF'
 #!/bin/bash
 
 systemctl restart nginx
+
 systemctl restart sslh
 EOF
 
 chmod +x \
-    /etc/letsencrypt/renewal-hooks/deploy/restart-ssh-tls.sh
+    /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh
 
 systemctl enable certbot.timer 2>/dev/null || true
+
 systemctl restart certbot.timer 2>/dev/null || true
 
 # ============================================================
-# RESTART ALL SERVICES
+# RESTART
 # ============================================================
 
 echo
 echo "============================================================"
-echo " RESTART SERVICES"
+echo " RESTART ALL SERVICES"
 echo "============================================================"
+echo
 
 systemctl daemon-reload
 
 systemctl restart ssh
+
 systemctl restart dropbear
+
 systemctl restart ssh-websocket
+
 systemctl restart squid
 
 systemctl restart openvpn-server@udp1194
+
 systemctl restart openvpn-server@tcp443
 
 systemctl restart nginx
+
 systemctl restart sslh
 
 for PORT in \
@@ -1256,10 +1316,10 @@ do
 
 done
 
-sleep 2
+sleep 3
 
 # ============================================================
-# GET PUBLIC IP
+# PUBLIC IP
 # ============================================================
 
 IP="$(curl \
@@ -1277,60 +1337,67 @@ if [ -z "$IP" ]; then
 fi
 
 # ============================================================
-# FINAL OUTPUT
+# FINAL
 # ============================================================
 
 clear
 
 echo "============================================================"
-echo " INSTALASI SELESAI"
+echo " INSTALL SSH SELESAI"
 echo "============================================================"
 echo
 
 echo "Host IP              : $IP"
+
 echo "Host Domain          : $DOMAIN"
 
 echo
 echo "============================================================"
-echo " SSH ACCOUNT"
+echo " SSH"
 echo "============================================================"
 echo
 
 echo "Username SSH         : $USERNAME"
+
 echo "Password SSH         : $PASSWORD"
 
 echo
 echo "OpenSSH              : 22"
+
 echo "Dropbear             : 442"
 
-echo
-echo "SSH WebSocket        : 80"
-echo "SSH WebSocket TLS    : 443"
+echo "SSH WS Non TLS       : 80"
+
+echo "SSH WS TLS / WSS     : 443"
 
 echo
 echo "============================================================"
-echo " SQUID"
+echo " SQUID PROXY"
 echo "============================================================"
 echo
 
 echo "Squid Host           : $DOMAIN"
-echo "Squid Port           : 8080"
-echo "                       8000"
-echo "                       3128"
+
+echo "Squid Ports          : 8080 / 8000 / 3128"
 
 echo "Squid Username       : $USERNAME"
+
 echo "Squid Password       : $PASSWORD"
 
 echo
 echo "============================================================"
-echo " BADVPN UDPGW"
+echo " BADVPN"
 echo "============================================================"
 echo
 
-echo "BadVPN Port          : 7100"
+echo "BadVPN UDPGW         : 7100"
+
 echo "                       7200"
+
 echo "                       7300"
+
 echo "                       7400"
+
 echo "                       7500"
 
 echo
@@ -1340,23 +1407,25 @@ echo "============================================================"
 echo
 
 echo "OpenVPN UDP          : 1194"
+
 echo "OpenVPN TCP          : 443"
 
 echo
-echo "OVPN UDP Config:"
+echo "OpenVPN Username     : $USERNAME"
+
+echo "OpenVPN Password     : $PASSWORD"
+
+echo
+echo "OVPN UDP:"
 echo "/root/ovpn/openvpn-1194.ovpn"
 
 echo
-echo "OVPN TCP Config:"
+echo "OVPN TCP:"
 echo "/root/ovpn/openvpn-443.ovpn"
 
 echo
-echo "OVPN Username        : $USERNAME"
-echo "OVPN Password        : $PASSWORD"
-
-echo
 echo "============================================================"
-echo " SSH WS NON TLS PAYLOAD"
+echo " PAYLOAD WS NON TLS"
 echo "============================================================"
 echo
 
@@ -1368,7 +1437,7 @@ echo "$DOMAIN:80"
 
 echo
 echo "============================================================"
-echo " SSH WSS TLS PAYLOAD"
+echo " PAYLOAD WSS"
 echo "============================================================"
 echo
 
@@ -1388,11 +1457,11 @@ echo " UDP CUSTOM"
 echo "============================================================"
 echo
 
-echo "UDP Firewall         : 1-65535"
+echo "UDP Port             : 1-65535"
 
 echo
 echo "============================================================"
-echo " LISTENING PORT"
+echo " LISTENING PORTS"
 echo "============================================================"
 echo
 
@@ -1453,9 +1522,11 @@ echo "ssh $USERNAME@$DOMAIN -p 22"
 
 echo
 echo "Username : $USERNAME"
+
 echo "Password : $PASSWORD"
 
 echo
 echo "============================================================"
 echo " SELESAI"
 echo "============================================================"
+echo
