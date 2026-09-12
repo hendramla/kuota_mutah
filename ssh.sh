@@ -1,359 +1,593 @@
+cat > /root/install-ssh-ws.sh <<'INSTALLER'
 #!/bin/bash
-
-set -uo pipefail
+set -e
 
 # ============================================================
-# SSH + WS + WSS + DROPBEAR + SQUID + OPENVPN + BADVPN
+# OpenSSH + HTTP Upgrade/WebSocket + TLS
 # Debian 12
+#
+# Client:
+# SSH   : DOMAIN:443@mashen:mashen
+# Proxy : 104.17.70.206:80
+#
+# Compatible payload:
+# GET / HTTP/1.1[crlf]
+# Host: edu.ruangguru.com[crlf][crlf]
+# PATCH / HTTP/1.1[crlf]
+# Host: [host][crlf]
+# Upgrade: websocket[crlf][crlf]
+# [split]
+# HTTP/ 69[crlf][crlf]
 # ============================================================
-
-USERNAME="mashen"
-PASSWORD="mashen"
-
-fail() {
-    echo
-    echo "============================================================"
-    echo " ERROR"
-    echo "============================================================"
-    echo "$1"
-    echo
-    exit 1
-}
-
-section() {
-    echo
-    echo "============================================================"
-    echo " $1"
-    echo "============================================================"
-    echo
-}
 
 if [ "$(id -u)" -ne 0 ]; then
-    fail "Jalankan script sebagai root."
+    echo "ERROR: jalankan script sebagai root."
+    exit 1
 fi
 
 clear
 
-section "SSH + WEBSOCKET + TLS + DROPBEAR + SQUID + OPENVPN + BADVPN"
-
-echo "Debian 12"
+echo "============================================================"
+echo "      SSH WS TLS INSTALLER - DEBIAN 12"
+echo "============================================================"
 echo
 
-# ============================================================
-# INPUT DOMAIN
-# ============================================================
-
-DOMAIN="${1:-}"
-
-if [ -z "$DOMAIN" ]; then
-
-    if [ ! -e /dev/tty ]; then
-        fail "Gunakan: bash install.sh domainanda.com"
-    fi
-
-    exec 3<>/dev/tty
-
-    while [ -z "$DOMAIN" ]; do
-
-        printf "Masukkan domain: " >&3
-
-        IFS= read -r DOMAIN <&3 || true
-
-        DOMAIN="$(printf '%s' "$DOMAIN" | tr -d '\r\n[:space:]')"
-
-        if [ -z "$DOMAIN" ]; then
-            echo "Domain tidak boleh kosong." >&3
-        fi
-
-    done
-fi
+read -rp "Masukkan domain SSH: " DOMAIN
 
 DOMAIN="${DOMAIN#http://}"
 DOMAIN="${DOMAIN#https://}"
 DOMAIN="${DOMAIN%%/*}"
-DOMAIN="${DOMAIN%.}"
+DOMAIN="${DOMAIN,,}"
+DOMAIN="$(echo "$DOMAIN" | tr -d '[:space:]')"
 
-if ! echo "$DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; then
-    fail "Domain tidak valid: $DOMAIN"
+if [ -z "$DOMAIN" ]; then
+    echo "ERROR: Domain tidak boleh kosong."
+    exit 1
 fi
 
+USERNAME="mashen"
+PASSWORD="mashen"
+
+SSH_PORT="22"
+WS_PORT="8880"
+
+echo
+echo "============================================================"
+echo " KONFIGURASI"
+echo "============================================================"
 echo
 echo "Domain   : $DOMAIN"
 echo "Username : $USERNAME"
 echo "Password : $PASSWORD"
+echo
+sleep 2
 
 # ============================================================
-# OS CHECK
+# SYSTEM
 # ============================================================
-
-[ -f /etc/os-release ] || fail "/etc/os-release tidak ditemukan."
-
-. /etc/os-release
-
-if [ "${ID:-}" != "debian" ]; then
-    fail "Script hanya untuk Debian."
-fi
-
-timedatectl set-timezone Asia/Jakarta || true
 
 export DEBIAN_FRONTEND=noninteractive
 
-# ============================================================
-# FIX APT
-# ============================================================
+echo
+echo "============================================================"
+echo " 1. UPDATE SYSTEM"
+echo "============================================================"
 
-section "FIX APT"
-
-apt-mark unhold \
-    nodejs \
-    npm \
-    ufw \
-    iptables-persistent \
-    netfilter-persistent \
-    2>/dev/null || true
-
-dpkg --configure -a || true
-
-apt-get remove --purge -y \
-    nodejs \
-    npm \
-    ufw \
-    iptables-persistent \
-    netfilter-persistent \
-    2>/dev/null || true
-
-apt-get autoremove -y || true
-
-apt-get -f install -y || true
-
-apt-get update || fail "apt-get update gagal."
-
-# ============================================================
-# PACKAGES
-# ============================================================
-
-section "INSTALL PACKAGES"
+apt-get update
 
 apt-get install -y \
-    curl \
-    wget \
-    git \
-    unzip \
-    zip \
-    socat \
-    ca-certificates \
-    openssl \
+    openssh-server \
+    openssh-client \
     nginx \
     certbot \
-    jq \
-    dnsutils \
+    python3-certbot-nginx \
+    python3 \
+    curl \
+    wget \
+    ca-certificates \
+    netcat-openbsd \
+    openssl \
+    socat \
     iproute2 \
     net-tools \
-    procps \
-    openssh-server \
-    dropbear \
-    squid \
-    sslh \
-    openvpn \
-    easy-rsa \
-    iptables \
-    build-essential \
-    cmake \
-    apache2-utils \
-    python3 \
-    python3-websockets \
-    || fail "Install package gagal."
+    cron
 
 # ============================================================
-# SSH USER
+# TIMEZONE
 # ============================================================
 
-section "SSH USER"
+echo
+echo "============================================================"
+echo " 2. TIMEZONE"
+echo "============================================================"
+
+timedatectl set-timezone Asia/Jakarta || true
+
+# ============================================================
+# CREATE SSH USER
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 3. CREATE SSH USER"
+echo "============================================================"
 
 if id "$USERNAME" >/dev/null 2>&1; then
-    echo "$USERNAME:$PASSWORD" | chpasswd
+    echo "User $USERNAME sudah ada."
 else
-    useradd -m -s /bin/bash "$USERNAME" || fail "Gagal membuat user."
-    echo "$USERNAME:$PASSWORD" | chpasswd
+    useradd \
+        --create-home \
+        --shell /bin/bash \
+        "$USERNAME"
 fi
 
+echo "${USERNAME}:${PASSWORD}" | chpasswd
+
 # ============================================================
-# OPENSSH
+# SSH CONFIG
 # ============================================================
 
-section "OPENSSH PORT 22"
+echo
+echo "============================================================"
+echo " 4. CONFIGURE OPENSSH"
+echo "============================================================"
 
-cp /etc/ssh/sshd_config \
-   "/etc/ssh/sshd_config.backup.$(date +%s)" \
-   2>/dev/null || true
+mkdir -p /etc/ssh/sshd_config.d
 
-sed -i '/^[[:space:]]*Port[[:space:]]/d' /etc/ssh/sshd_config
-sed -i '/^[[:space:]]*PasswordAuthentication[[:space:]]/d' /etc/ssh/sshd_config
-sed -i '/^[[:space:]]*PermitRootLogin[[:space:]]/d' /etc/ssh/sshd_config
-sed -i '/^[[:space:]]*UsePAM[[:space:]]/d' /etc/ssh/sshd_config
+if [ -f /etc/ssh/sshd_config ]; then
+    cp -a \
+        /etc/ssh/sshd_config \
+        "/etc/ssh/sshd_config.backup.$(date +%Y%m%d-%H%M%S)"
+fi
 
-cat >> /etc/ssh/sshd_config <<'EOF'
-
+cat > /etc/ssh/sshd_config.d/99-ssh-custom.conf <<'EOF'
 Port 22
+
 PasswordAuthentication yes
+KbdInteractiveAuthentication yes
 UsePAM yes
+
 PermitRootLogin prohibit-password
+
+AllowTcpForwarding yes
+AllowAgentForwarding yes
+GatewayPorts yes
 
 TCPKeepAlive yes
 ClientAliveInterval 60
 ClientAliveCountMax 3
 
-MaxSessions 1000
-MaxStartups 1000:30:2000
+MaxSessions 100
+MaxStartups 100:30:200
+
+LoginGraceTime 60
+
+UseDNS no
+
+X11Forwarding no
+
+Banner /etc/ssh/banner
 EOF
 
-sshd -t || fail "Konfigurasi OpenSSH error."
+cat > /etc/ssh/banner <<'EOF'
 
-systemctl enable ssh >/dev/null 2>&1 || true
+============================================================
+                         JOSS
+============================================================
 
-# Tidak perlu restart bila ssh sudah aktif.
-# Reload lebih aman agar sesi installer tidak terputus.
-systemctl reload ssh || systemctl restart ssh || fail "SSH gagal."
-
-# ============================================================
-# DROPBEAR
-# ============================================================
-
-section "DROPBEAR PORT 442"
-
-cat > /etc/default/dropbear <<'EOF'
-NO_START=0
-DROPBEAR_PORT=442
-DROPBEAR_EXTRA_ARGS="-p 442"
-DROPBEAR_BANNER="/etc/issue.net"
 EOF
 
-cat > /etc/issue.net <<EOF
-========================================
- SSH PREMIUM SERVER
- Domain : $DOMAIN
-========================================
-EOF
+sshd -t
 
-systemctl enable dropbear >/dev/null 2>&1 || true
-systemctl restart dropbear || fail "Dropbear gagal start."
+systemctl enable ssh
+systemctl restart ssh
 
 # ============================================================
-# PYTHON WEBSOCKET
+# SSH HTTP UPGRADE BRIDGE
 # ============================================================
 
-section "SSH WEBSOCKET"
+echo
+echo "============================================================"
+echo " 5. INSTALL SSH HTTP UPGRADE BRIDGE"
+echo "============================================================"
 
-python3 -c 'import websockets' \
-    || fail "python3-websockets tidak tersedia."
+mkdir -p /opt/ssh-ws
 
-mkdir -p /opt/ssh-websocket
-
-cat > /opt/ssh-websocket/server.py <<'PY'
+cat > /opt/ssh-ws/ssh-ws.py <<'PYTHON'
 #!/usr/bin/env python3
 
 import asyncio
-import websockets
+
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 8880
+
+SSH_HOST = "127.0.0.1"
+SSH_PORT = 22
+
+HEADER_TIMEOUT = 20
+SSH_IDENT_TIMEOUT = 30
+
+MAX_HEADER = 131072
+MAX_PRE_SSH = 131072
 
 
-async def ws_to_ssh(ws, writer):
-    try:
-        async for message in ws:
-            if isinstance(message, str):
-                message = message.encode()
+async def raw_relay(reader, writer):
+    """
+    Raw TCP forwarding after SSH identification has started.
+    """
 
-            writer.write(message)
-            await writer.drain()
-
-    except Exception:
-        pass
-
-
-async def ssh_to_ws(ws, reader):
     try:
         while True:
+
             data = await reader.read(65536)
 
             if not data:
                 break
 
-            await ws.send(data)
+            writer.write(data)
 
-    except Exception:
+            await writer.drain()
+
+    except (
+        asyncio.CancelledError,
+        ConnectionResetError,
+        BrokenPipeError
+    ):
         pass
 
 
-async def handler(ws, path):
+async def server_to_client(ssh_reader, client_writer):
+    """
+    Forward OpenSSH server data directly to the client.
+    """
+
     try:
-        reader, writer = await asyncio.open_connection(
-            "127.0.0.1",
-            22
+
+        while True:
+
+            data = await ssh_reader.read(65536)
+
+            if not data:
+                break
+
+            client_writer.write(data)
+
+            await client_writer.drain()
+
+    except (
+        asyncio.CancelledError,
+        ConnectionResetError,
+        BrokenPipeError
+    ):
+        pass
+
+
+async def client_to_ssh_filtered(
+    client_reader,
+    ssh_writer,
+    initial=b""
+):
+    """
+    Important compatibility filter.
+
+    HTTP Custom payload can send extra data after HTTP 101,
+    for example:
+
+        HTTP/ 69\r\n\r\n
+
+    because it is transmitted using [split].
+
+    That data MUST NOT reach OpenSSH.
+
+    Wait until the actual SSH identification string:
+
+        SSH-2.0-...
+
+    is received.
+
+    Everything before "SSH-" is discarded.
+
+    After SSH identification is found, traffic becomes
+    a completely raw TCP tunnel.
+    """
+
+    buf = initial
+
+    try:
+
+        while True:
+
+            pos = buf.find(b"SSH-")
+
+            if pos >= 0:
+
+                ssh_data = buf[pos:]
+
+                if ssh_data:
+
+                    ssh_writer.write(ssh_data)
+
+                    await ssh_writer.drain()
+
+                print(
+                    "SSH client identification detected; "
+                    f"discarded {pos} pre-SSH bytes",
+                    flush=True
+                )
+
+                # After the SSH identification starts,
+                # do NOT filter anything anymore.
+                await raw_relay(
+                    client_reader,
+                    ssh_writer
+                )
+
+                return
+
+            if len(buf) > MAX_PRE_SSH:
+
+                print(
+                    "Too much data received before SSH identification.",
+                    flush=True
+                )
+
+                return
+
+            chunk = await asyncio.wait_for(
+                client_reader.read(4096),
+                timeout=SSH_IDENT_TIMEOUT
+            )
+
+            if not chunk:
+                return
+
+            buf += chunk
+
+            # Prevent excessive memory growth while retaining
+            # enough bytes to detect a split "SSH-" prefix.
+            if len(buf) > 32768:
+                buf = buf[-32768:]
+
+    except asyncio.TimeoutError:
+
+        print(
+            "Timeout waiting for SSH client identification.",
+            flush=True
         )
-    except Exception:
-        await ws.close()
-        return
 
-    a = asyncio.create_task(
-        ws_to_ssh(ws, writer)
+    except (
+        asyncio.CancelledError,
+        ConnectionResetError,
+        BrokenPipeError
+    ):
+        pass
+
+
+async def read_http_request(reader):
+
+    buf = b""
+
+    while b"\r\n\r\n" not in buf:
+
+        chunk = await asyncio.wait_for(
+            reader.read(4096),
+            timeout=HEADER_TIMEOUT
+        )
+
+        if not chunk:
+            return None, b""
+
+        buf += chunk
+
+        if len(buf) > MAX_HEADER:
+            return None, b""
+
+    headers, leftover = buf.split(
+        b"\r\n\r\n",
+        1
     )
 
-    b = asyncio.create_task(
-        ssh_to_ws(ws, reader)
-    )
+    return headers, leftover
 
-    done, pending = await asyncio.wait(
-        [a, b],
-        return_when=asyncio.FIRST_COMPLETED
-    )
 
-    for task in pending:
-        task.cancel()
+async def handle(
+    client_reader,
+    client_writer
+):
+
+    ssh_writer = None
+
+    peer = client_writer.get_extra_info(
+        "peername"
+    )
 
     try:
-        writer.close()
-        await writer.wait_closed()
-    except Exception:
-        pass
+
+        headers, leftover = await read_http_request(
+            client_reader
+        )
+
+        if headers is None:
+            return
+
+        request = headers.decode(
+            "latin1",
+            errors="ignore"
+        )
+
+        lines = request.split("\r\n")
+
+        first_line = (
+            lines[0]
+            if lines
+            else "UNKNOWN"
+        )
+
+        print(
+            f"{peer} request: {first_line}",
+            flush=True
+        )
+
+        lower = request.lower()
+
+        # Require an HTTP Upgrade request.
+        if "upgrade:" not in lower:
+
+            client_writer.write(
+                b"HTTP/1.1 400 Bad Request\r\n"
+                b"Connection: close\r\n"
+                b"Content-Length: 0\r\n"
+                b"\r\n"
+            )
+
+            await client_writer.drain()
+
+            return
+
+        # Connect to local OpenSSH.
+        ssh_reader, ssh_writer = (
+            await asyncio.open_connection(
+                SSH_HOST,
+                SSH_PORT
+            )
+        )
+
+        # IMPORTANT:
+        # Return exactly ONE HTTP response.
+        client_writer.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Upgrade: websocket\r\n"
+            b"\r\n"
+        )
+
+        await client_writer.drain()
+
+        # OpenSSH -> client
+        s2c = asyncio.create_task(
+            server_to_client(
+                ssh_reader,
+                client_writer
+            )
+        )
+
+        # Client -> OpenSSH
+        #
+        # Filter extra HTTP Custom [split] bytes before
+        # the real SSH client identification string.
+        c2s = asyncio.create_task(
+            client_to_ssh_filtered(
+                client_reader,
+                ssh_writer,
+                leftover
+            )
+        )
+
+        done, pending = await asyncio.wait(
+            [c2s, s2c],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in pending:
+            task.cancel()
+
+        await asyncio.gather(
+            *pending,
+            return_exceptions=True
+        )
+
+    except asyncio.TimeoutError:
+
+        print(
+            f"{peer}: HTTP header timeout",
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            f"{peer}: {repr(e)}",
+            flush=True
+        )
+
+    finally:
+
+        try:
+
+            if ssh_writer:
+
+                ssh_writer.close()
+
+                await ssh_writer.wait_closed()
+
+        except Exception:
+            pass
+
+        try:
+
+            client_writer.close()
+
+            await client_writer.wait_closed()
+
+        except Exception:
+            pass
 
 
 async def main():
 
-    async with websockets.serve(
-        handler,
-        "127.0.0.1",
-        10080,
-        ping_interval=30,
-        ping_timeout=30,
-        max_size=None,
-        compression=None
-    ):
+    server = await asyncio.start_server(
+        handle,
+        LISTEN_HOST,
+        LISTEN_PORT,
+        reuse_address=True,
+        backlog=4096
+    )
 
-        print("SSH WebSocket listening 127.0.0.1:10080")
+    print(
+        f"SSH HTTP Upgrade bridge listening "
+        f"on {LISTEN_HOST}:{LISTEN_PORT}",
+        flush=True
+    )
 
-        await asyncio.Future()
+    async with server:
+
+        await server.serve_forever()
 
 
-asyncio.run(main())
-PY
+if __name__ == "__main__":
 
-chmod +x /opt/ssh-websocket/server.py
+    asyncio.run(main())
+PYTHON
 
-cat > /etc/systemd/system/ssh-websocket.service <<'EOF'
+chmod 755 /opt/ssh-ws/ssh-ws.py
+
+# ============================================================
+# SYSTEMD SSH-WS
+# ============================================================
+
+cat > /etc/systemd/system/ssh-ws.service <<'EOF'
 [Unit]
-Description=SSH WebSocket
+Description=SSH HTTP Upgrade Bridge
 After=network-online.target ssh.service
 Wants=network-online.target
+Requires=ssh.service
 
 [Service]
 Type=simple
-User=root
 
-ExecStart=/usr/bin/python3 /opt/ssh-websocket/server.py
+User=root
+Group=root
+
+ExecStart=/usr/bin/python3 /opt/ssh-ws/ssh-ws.py
 
 Restart=always
 RestartSec=2
 
 LimitNOFILE=1048576
+TasksMax=infinity
+
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -361,869 +595,561 @@ EOF
 
 systemctl daemon-reload
 
-systemctl enable ssh-websocket >/dev/null 2>&1 || true
-
-systemctl restart ssh-websocket || true
+systemctl enable ssh-ws
+systemctl restart ssh-ws
 
 sleep 2
 
-if ! systemctl is-active --quiet ssh-websocket; then
+if ! systemctl is-active --quiet ssh-ws; then
+
+    echo
+    echo "ERROR: ssh-ws gagal start."
+    echo
 
     journalctl \
-        -u ssh-websocket \
-        -n 30 \
-        --no-pager
+        -u ssh-ws \
+        --no-pager \
+        -n 50
 
-    fail "SSH WebSocket gagal."
-
+    exit 1
 fi
 
 # ============================================================
-# CERTBOT
+# NGINX GLOBAL TUNING
 # ============================================================
 
-section "SSL CERTIFICATE"
+echo
+echo "============================================================"
+echo " 6. CONFIGURE NGINX"
+echo "============================================================"
 
-systemctl stop sslh 2>/dev/null || true
-systemctl stop nginx 2>/dev/null || true
+cp -a \
+    /etc/nginx/nginx.conf \
+    "/etc/nginx/nginx.conf.backup.$(date +%Y%m%d-%H%M%S)"
 
-if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+cat > /etc/nginx/nginx.conf <<'NGINX'
+user www-data;
 
-    certbot certonly \
-        --standalone \
-        --preferred-challenges http \
-        --agree-tos \
-        --non-interactive \
-        --register-unsafely-without-email \
-        -d "$DOMAIN"
+worker_processes auto;
 
-    CERTBOT_RESULT=$?
+worker_rlimit_nofile 1048576;
 
-    if [ "$CERTBOT_RESULT" -ne 0 ]; then
-        fail "Certbot gagal. Pastikan domain mengarah ke VPS, port 80 terbuka, dan Cloudflare DNS Only."
-    fi
+pid /run/nginx.pid;
 
-fi
+include /etc/nginx/modules-enabled/*.conf;
 
-[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ] \
-    || fail "Certificate tidak ditemukan."
+events {
 
-# ============================================================
-# NGINX
-# ============================================================
+    worker_connections 65535;
 
-section "NGINX WS + WSS"
+    multi_accept on;
 
+    use epoll;
+}
+
+http {
+
+    sendfile on;
+
+    tcp_nopush on;
+    tcp_nodelay on;
+
+    keepalive_timeout 65;
+    keepalive_requests 100000;
+
+    types_hash_max_size 2048;
+
+    server_tokens off;
+
+    client_max_body_size 100m;
+
+    include /etc/nginx/mime.types;
+
+    default_type application/octet-stream;
+
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+
+    gzip off;
+
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+NGINX
+
+# Remove default/conflicting sites on a fresh install.
 rm -f /etc/nginx/sites-enabled/default
 rm -f /etc/nginx/sites-available/default
 
-cat > /etc/nginx/conf.d/websocket-map.conf <<'EOF'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-}
-EOF
+rm -f /etc/nginx/sites-enabled/ssh-ws.conf
+rm -f /etc/nginx/sites-available/ssh-ws.conf
 
-cat > /etc/nginx/sites-available/ssh-websocket <<EOF
+# ============================================================
+# TEMPORARY HTTP SERVER FOR CERTBOT
+# ============================================================
+
+cat > /etc/nginx/sites-available/ssh-ws.conf <<EOF
 server {
+
     listen 80;
     listen [::]:80;
 
     server_name $DOMAIN;
 
     location / {
+
+        proxy_pass http://127.0.0.1:$WS_PORT;
+
         proxy_http_version 1.1;
 
+        proxy_set_header Host \$http_host;
+
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Connection "upgrade";
 
-        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
 
-        proxy_connect_timeout 60s;
+        proxy_set_header X-Forwarded-For \
+            \$proxy_add_x_forwarded_for;
+
+        proxy_connect_timeout 10s;
+
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
 
         proxy_buffering off;
         proxy_request_buffering off;
 
-        proxy_pass http://127.0.0.1:10080;
+        proxy_socket_keepalive on;
     }
 }
+EOF
+
+ln -s \
+    /etc/nginx/sites-available/ssh-ws.conf \
+    /etc/nginx/sites-enabled/ssh-ws.conf
+
+nginx -t
+
+systemctl enable nginx
+systemctl restart nginx
+
+# ============================================================
+# DNS CHECK
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 7. DNS CHECK"
+echo "============================================================"
+
+SERVER_IP="$(
+    curl -4 -s \
+    --max-time 10 \
+    https://api.ipify.org \
+    || true
+)"
+
+echo
+echo "VPS IP : ${SERVER_IP:-UNKNOWN}"
+echo "Domain : $DOMAIN"
+echo
+
+getent ahostsv4 "$DOMAIN" 2>/dev/null \
+    | awk '{print $1}' \
+    | sort -u \
+    | head -10 \
+    || true
+
+echo
+
+# ============================================================
+# CERTIFICATE
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 8. REQUEST LET'S ENCRYPT CERTIFICATE"
+echo "============================================================"
+echo
+
+if [ \
+    -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" \
+    ] && [ \
+    -f "/etc/letsencrypt/live/$DOMAIN/privkey.pem" \
+    ]; then
+
+    echo "Certificate sudah tersedia."
+
+else
+
+    certbot certonly \
+        --nginx \
+        --domain "$DOMAIN" \
+        --non-interactive \
+        --agree-tos \
+        --register-unsafely-without-email
+
+fi
+
+if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+
+    echo
+    echo "============================================================"
+    echo " SSL CERTIFICATE GAGAL"
+    echo "============================================================"
+    echo
+    echo "Pastikan:"
+    echo "1. Domain mengarah ke IP VPS ini."
+    echo "2. Port 80 dari internet terbuka."
+    echo "3. Jika perlu, Cloudflare sementara DNS Only."
+    echo
+    echo "Setelah diperbaiki jalankan ulang:"
+    echo
+    echo "bash /root/install-ssh-ws.sh"
+    echo
+
+    exit 1
+fi
+
+# ============================================================
+# FINAL NGINX SERVER
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 9. ENABLE PORT 80 + 443"
+echo "============================================================"
+
+cat > /etc/nginx/sites-available/ssh-ws.conf <<EOF
+# ============================================================
+# SSH HTTP UPGRADE - PORT 80
+# ============================================================
 
 server {
-    listen 127.0.0.1:8443 ssl;
+
+    listen 80;
+    listen [::]:80;
 
     server_name $DOMAIN;
 
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    location / {
+
+        proxy_pass http://127.0.0.1:$WS_PORT;
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$http_host;
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header X-Real-IP \$remote_addr;
+
+        proxy_set_header X-Forwarded-For \
+            \$proxy_add_x_forwarded_for;
+
+        proxy_connect_timeout 10s;
+
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+
+        proxy_socket_keepalive on;
+    }
+}
+
+# ============================================================
+# SSH HTTP UPGRADE + TLS - PORT 443
+# ============================================================
+
+server {
+
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name $DOMAIN;
+
+    ssl_certificate \
+        /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+
+    ssl_certificate_key \
+        /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
 
     ssl_session_cache shared:SSL:50m;
     ssl_session_timeout 1d;
 
+    ssl_session_tickets off;
+
     location / {
+
+        proxy_pass http://127.0.0.1:$WS_PORT;
+
         proxy_http_version 1.1;
 
+        proxy_set_header Host \$http_host;
+
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Connection "upgrade";
 
-        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
 
-        proxy_connect_timeout 60s;
+        proxy_set_header X-Forwarded-For \
+            \$proxy_add_x_forwarded_for;
+
+        proxy_connect_timeout 10s;
+
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
 
         proxy_buffering off;
         proxy_request_buffering off;
 
-        proxy_pass http://127.0.0.1:10080;
+        proxy_socket_keepalive on;
     }
 }
 EOF
 
-ln -sf \
-    /etc/nginx/sites-available/ssh-websocket \
-    /etc/nginx/sites-enabled/ssh-websocket
+nginx -t
 
-cat > /etc/nginx/conf.d/ssh-tuning.conf <<'EOF'
-client_max_body_size 100m;
-
-proxy_connect_timeout 60s;
-proxy_send_timeout 86400s;
-proxy_read_timeout 86400s;
-
-keepalive_timeout 75s;
-keepalive_requests 100000;
-EOF
-
-nginx -t || fail "nginx -t gagal."
-
-systemctl enable nginx >/dev/null 2>&1 || true
-systemctl restart nginx || fail "Nginx gagal start."
-
-# ============================================================
-# SQUID
-# ============================================================
-
-section "SQUID"
-
-SQUID_AUTH="$(find /usr/lib \
-    -type f \
-    -name basic_ncsa_auth \
-    2>/dev/null \
-    | head -1)"
-
-[ -n "$SQUID_AUTH" ] \
-    || fail "basic_ncsa_auth tidak ditemukan."
-
-htpasswd -bc \
-    /etc/squid/passwd \
-    "$USERNAME" \
-    "$PASSWORD"
-
-cat > /etc/squid/squid.conf <<EOF
-http_port 3128
-http_port 8000
-http_port 8080
-
-visible_hostname $DOMAIN
-
-auth_param basic program $SQUID_AUTH /etc/squid/passwd
-auth_param basic realm SSH-PROXY
-auth_param basic credentialsttl 24 hours
-
-acl authenticated proxy_auth REQUIRED
-
-http_access allow authenticated
-http_access deny all
-
-forwarded_for delete
-
-via on
-
-cache deny all
-
-access_log /var/log/squid/access.log
-EOF
-
-if ! squid -k parse; then
-    fail "Konfigurasi Squid gagal."
-fi
-
-systemctl enable squid >/dev/null 2>&1 || true
-
-if ! systemctl restart squid; then
-
-    journalctl \
-        -u squid \
-        -n 30 \
-        --no-pager
-
-    fail "Squid gagal start."
-
-fi
-
-echo
-echo "SQUID BERHASIL"
-echo
-
-# ============================================================
-# EASY-RSA
-# ============================================================
-
-section "OPENVPN EASY-RSA"
-
-EASYRSA="/usr/share/easy-rsa/easyrsa"
-
-[ -x "$EASYRSA" ] \
-    || fail "EasyRSA tidak ditemukan di $EASYRSA"
-
-rm -rf /etc/openvpn/easy-rsa
-
-mkdir -p /etc/openvpn/easy-rsa
-mkdir -p /etc/openvpn/server
-
-cd /etc/openvpn/easy-rsa \
-    || fail "Tidak bisa membuka folder EasyRSA."
-
-export EASYRSA_BATCH=1
-export EASYRSA_REQ_CN="SSH-VPN-CA"
-export EASYRSA_PKI="/etc/openvpn/easy-rsa/pki"
-
-"$EASYRSA" init-pki \
-    || fail "EasyRSA init-pki gagal."
-
-"$EASYRSA" \
-    --batch \
-    build-ca \
-    nopass \
-    || fail "Build OpenVPN CA gagal."
-
-EASYRSA_CERT_EXPIRE=3650 \
-"$EASYRSA" \
-    --batch \
-    build-server-full \
-    server \
-    nopass \
-    || fail "Build OpenVPN server certificate gagal."
-
-cp \
-    "$EASYRSA_PKI/ca.crt" \
-    /etc/openvpn/server/ca.crt \
-    || fail "Copy ca.crt gagal."
-
-cp \
-    "$EASYRSA_PKI/issued/server.crt" \
-    /etc/openvpn/server/server.crt \
-    || fail "Copy server.crt gagal."
-
-cp \
-    "$EASYRSA_PKI/private/server.key" \
-    /etc/openvpn/server/server.key \
-    || fail "Copy server.key gagal."
-
-openvpn \
-    --genkey secret \
-    /etc/openvpn/server/tls-crypt.key \
-    || fail "Generate tls-crypt gagal."
-
-PAM_PLUGIN="$(find /usr/lib \
-    -type f \
-    -name openvpn-plugin-auth-pam.so \
-    2>/dev/null \
-    | head -1)"
-
-[ -n "$PAM_PLUGIN" ] \
-    || fail "OpenVPN PAM plugin tidak ditemukan."
-
-echo "PAM Plugin: $PAM_PLUGIN"
-
-# ============================================================
-# OPENVPN UDP
-# ============================================================
-
-section "OPENVPN UDP 1194"
-
-cat > /etc/openvpn/server/udp1194.conf <<EOF
-port 1194
-proto udp
-
-dev tun0
-
-topology subnet
-server 10.8.0.0 255.255.255.0
-
-ca /etc/openvpn/server/ca.crt
-cert /etc/openvpn/server/server.crt
-key /etc/openvpn/server/server.key
-
-dh none
-
-tls-crypt /etc/openvpn/server/tls-crypt.key
-
-verify-client-cert none
-username-as-common-name
-
-plugin $PAM_PLUGIN login
-
-tls-version-min 1.2
-
-auth SHA256
-
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-
-keepalive 10 120
-
-persist-key
-persist-tun
-
-push "redirect-gateway def1 bypass-dhcp"
-
-push "dhcp-option DNS 1.1.1.1"
-push "dhcp-option DNS 1.0.0.1"
-
-verb 3
-EOF
-
-# ============================================================
-# OPENVPN TCP 443 BACKEND
-# ============================================================
-
-section "OPENVPN TCP 443"
-
-cat > /etc/openvpn/server/tcp443.conf <<EOF
-local 127.0.0.1
-
-port 1195
-
-proto tcp-server
-
-dev tun1
-
-topology subnet
-server 10.9.0.0 255.255.255.0
-
-ca /etc/openvpn/server/ca.crt
-cert /etc/openvpn/server/server.crt
-key /etc/openvpn/server/server.key
-
-dh none
-
-tls-crypt /etc/openvpn/server/tls-crypt.key
-
-verify-client-cert none
-username-as-common-name
-
-plugin $PAM_PLUGIN login
-
-tls-version-min 1.2
-
-auth SHA256
-
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-
-keepalive 10 120
-
-persist-key
-persist-tun
-
-push "redirect-gateway def1 bypass-dhcp"
-
-push "dhcp-option DNS 1.1.1.1"
-push "dhcp-option DNS 1.0.0.1"
-
-verb 3
-EOF
-
-systemctl daemon-reload
-
-systemctl enable openvpn-server@udp1194 >/dev/null 2>&1 || true
-systemctl enable openvpn-server@tcp443 >/dev/null 2>&1 || true
-
-if ! systemctl restart openvpn-server@udp1194; then
-
-    journalctl \
-        -u openvpn-server@udp1194 \
-        -n 40 \
-        --no-pager
-
-    fail "OpenVPN UDP 1194 gagal."
-
-fi
-
-if ! systemctl restart openvpn-server@tcp443; then
-
-    journalctl \
-        -u openvpn-server@tcp443 \
-        -n 40 \
-        --no-pager
-
-    fail "OpenVPN TCP backend gagal."
-
-fi
-
-# ============================================================
-# SYSCTL
-# ============================================================
-
-section "NETWORK TUNING"
-
-cat > /etc/sysctl.d/99-ssh-vpn.conf <<'EOF'
-net.ipv4.ip_forward=1
-
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-
-net.core.somaxconn=65535
-net.core.netdev_max_backlog=65535
-
-net.ipv4.tcp_max_syn_backlog=65535
-
-net.ipv4.tcp_fin_timeout=15
-
-net.ipv4.tcp_keepalive_time=600
-net.ipv4.tcp_keepalive_intvl=30
-net.ipv4.tcp_keepalive_probes=5
-
-fs.file-max=2097152
-EOF
-
-sysctl --system >/dev/null \
-    || fail "sysctl gagal."
-
-# ============================================================
-# NAT
-# ============================================================
-
-section "IPTABLES NAT"
-
-IFACE="$(ip -4 route show default \
-    | awk '/default/ {print $5; exit}')"
-
-[ -n "$IFACE" ] \
-    || fail "Interface internet tidak ditemukan."
-
-iptables -t nat \
-    -C POSTROUTING \
-    -s 10.8.0.0/24 \
-    -o "$IFACE" \
-    -j MASQUERADE \
-    2>/dev/null || \
-iptables -t nat \
-    -A POSTROUTING \
-    -s 10.8.0.0/24 \
-    -o "$IFACE" \
-    -j MASQUERADE
-
-iptables -t nat \
-    -C POSTROUTING \
-    -s 10.9.0.0/24 \
-    -o "$IFACE" \
-    -j MASQUERADE \
-    2>/dev/null || \
-iptables -t nat \
-    -A POSTROUTING \
-    -s 10.9.0.0/24 \
-    -o "$IFACE" \
-    -j MASQUERADE
-
-iptables \
-    -C FORWARD \
-    -s 10.8.0.0/24 \
-    -j ACCEPT \
-    2>/dev/null || \
-iptables \
-    -A FORWARD \
-    -s 10.8.0.0/24 \
-    -j ACCEPT
-
-iptables \
-    -C FORWARD \
-    -s 10.9.0.0/24 \
-    -j ACCEPT \
-    2>/dev/null || \
-iptables \
-    -A FORWARD \
-    -s 10.9.0.0/24 \
-    -j ACCEPT
-
-iptables \
-    -C FORWARD \
-    -m conntrack \
-    --ctstate ESTABLISHED,RELATED \
-    -j ACCEPT \
-    2>/dev/null || \
-iptables \
-    -A FORWARD \
-    -m conntrack \
-    --ctstate ESTABLISHED,RELATED \
-    -j ACCEPT
-
-# ============================================================
-# SAVE IPTABLES
-# ============================================================
-
-mkdir -p /etc/iptables-custom
-
-iptables-save > /etc/iptables-custom/rules.v4
-
-cat > /etc/systemd/system/iptables-custom.service <<'EOF'
-[Unit]
-Description=Restore custom iptables
-Before=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables-restore /etc/iptables-custom/rules.v4
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable iptables-custom.service >/dev/null 2>&1 || true
-
-# ============================================================
-# SSLH
-# ============================================================
-
-section "SSLH PORT 443"
-
-systemctl stop sslh 2>/dev/null || true
-
-SSLH_BIN="$(command -v sslh || true)"
-
-if [ -z "$SSLH_BIN" ]; then
-    SSLH_BIN="$(command -v sslh-fork || true)"
-fi
-
-[ -n "$SSLH_BIN" ] \
-    || fail "Binary sslh tidak ditemukan."
-
-cat > /etc/default/sslh <<EOF
-RUN=yes
-
-DAEMON=$SSLH_BIN
-
-DAEMON_OPTS="--user sslh --listen 0.0.0.0:443 --openvpn 127.0.0.1:1195 --tls 127.0.0.1:8443 --timeout 3"
-EOF
-
-systemctl daemon-reload
-systemctl enable sslh >/dev/null 2>&1 || true
-
-if ! systemctl restart sslh; then
-
-    journalctl \
-        -u sslh \
-        -n 40 \
-        --no-pager
-
-    fail "SSLH gagal start."
-
-fi
-
-# ============================================================
-# BADVPN
-# ============================================================
-
-section "BADVPN"
-
-rm -rf /tmp/badvpn-src
-
-git clone \
-    --depth=1 \
-    https://github.com/ambrop72/badvpn.git \
-    /tmp/badvpn-src \
-    || fail "Clone BadVPN gagal."
-
-mkdir -p /tmp/badvpn-src/build
-
-cd /tmp/badvpn-src/build \
-    || fail "Folder BadVPN gagal."
-
-cmake .. \
-    -DBUILD_NOTHING_BY_DEFAULT=1 \
-    -DBUILD_UDPGW=1 \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    || fail "CMake BadVPN gagal."
-
-make -j"$(nproc)" \
-    || fail "Compile BadVPN gagal."
-
-BADVPN_BIN="$(find . \
-    -type f \
-    -name badvpn-udpgw \
-    | head -1)"
-
-[ -n "$BADVPN_BIN" ] \
-    || fail "badvpn-udpgw tidak ditemukan."
-
-install \
-    -m 755 \
-    "$BADVPN_BIN" \
-    /usr/local/bin/badvpn-udpgw \
-    || fail "Install BadVPN gagal."
-
-for PORT in \
-    7100 \
-    7200 \
-    7300 \
-    7400 \
-    7500
-do
-
-cat > "/etc/systemd/system/badvpn-${PORT}.service" <<EOF
-[Unit]
-Description=BadVPN UDPGW $PORT
-After=network-online.target
-
-[Service]
-Type=simple
-
-ExecStart=/usr/local/bin/badvpn-udpgw \
---listen-addr 0.0.0.0:$PORT \
---max-clients 1000 \
---max-connections-for-client 20
-
-Restart=always
-RestartSec=2
-
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-done
-
-systemctl daemon-reload
-
-for PORT in \
-    7100 \
-    7200 \
-    7300 \
-    7400 \
-    7500
-do
-
-    systemctl enable \
-        "badvpn-${PORT}.service" \
-        >/dev/null 2>&1 || true
-
-    systemctl restart \
-        "badvpn-${PORT}.service" \
-        || fail "BadVPN port $PORT gagal."
-
-done
-
-# ============================================================
-# OVPN CLIENT
-# ============================================================
-
-section "GENERATE OVPN"
-
-mkdir -p /root/ovpn
-
-CA_CERT="$(cat /etc/openvpn/server/ca.crt)"
-TLS_CRYPT="$(cat /etc/openvpn/server/tls-crypt.key)"
-
-cat > /root/ovpn/openvpn-1194.ovpn <<EOF
-client
-dev tun
-
-proto udp
-
-remote $DOMAIN 1194
-
-resolv-retry infinite
-nobind
-
-persist-key
-persist-tun
-
-remote-cert-tls server
-
-auth-user-pass
-auth-nocache
-
-auth SHA256
-
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-
-verb 3
-
-<ca>
-$CA_CERT
-</ca>
-
-<tls-crypt>
-$TLS_CRYPT
-</tls-crypt>
-EOF
-
-cat > /root/ovpn/openvpn-443.ovpn <<EOF
-client
-dev tun
-
-proto tcp-client
-
-remote $DOMAIN 443
-
-resolv-retry infinite
-nobind
-
-persist-key
-persist-tun
-
-remote-cert-tls server
-
-auth-user-pass
-auth-nocache
-
-auth SHA256
-
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-
-verb 3
-
-<ca>
-$CA_CERT
-</ca>
-
-<tls-crypt>
-$TLS_CRYPT
-</tls-crypt>
-EOF
-
-chmod 600 /root/ovpn/*.ovpn
-
-# ============================================================
-# CERTBOT AUTO RENEW
-# ============================================================
-
-mkdir -p \
-    /etc/letsencrypt/renewal-hooks/deploy
-
-cat > \
-/etc/letsencrypt/renewal-hooks/deploy/restart-ssh.sh <<'EOF'
-#!/bin/bash
 systemctl restart nginx
-systemctl restart sslh
+
+# ============================================================
+# CERTBOT RENEWAL
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 10. CERTBOT AUTO RENEW"
+echo "============================================================"
+
+systemctl enable certbot.timer 2>/dev/null || true
+systemctl start certbot.timer 2>/dev/null || true
+
+mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+
+cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh <<'EOF'
+#!/bin/bash
+systemctl reload nginx
 EOF
 
 chmod +x \
-    /etc/letsencrypt/renewal-hooks/deploy/restart-ssh.sh
-
-systemctl enable certbot.timer >/dev/null 2>&1 || true
-systemctl restart certbot.timer >/dev/null 2>&1 || true
+    /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 
 # ============================================================
-# SAVE FINAL IPTABLES
+# TCP TUNING
 # ============================================================
 
-iptables-save > /etc/iptables-custom/rules.v4
+echo
+echo "============================================================"
+echo " 11. TCP TUNING"
+echo "============================================================"
+
+cat > /etc/sysctl.d/99-ssh-ws.conf <<'EOF'
+fs.file-max = 2097152
+
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 16384
+
+net.ipv4.tcp_max_syn_backlog = 16384
+
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+
+net.ipv4.tcp_fin_timeout = 30
+
+net.ipv4.ip_local_port_range = 10240 65535
+EOF
+
+sysctl --system >/dev/null 2>&1 || true
 
 # ============================================================
-# FINAL
+# SSH SERVICE LIMITS
 # ============================================================
 
-IP="$(curl -4 \
-    -s \
-    --max-time 10 \
-    https://api.ipify.org \
-    2>/dev/null || true)"
+mkdir -p /etc/systemd/system/ssh.service.d
 
-if [ -z "$IP" ]; then
-    IP="$(hostname -I | awk '{print $1}')"
+cat > /etc/systemd/system/ssh.service.d/limits.conf <<'EOF'
+[Service]
+LimitNOFILE=1048576
+TasksMax=infinity
+EOF
+
+mkdir -p /etc/systemd/system/nginx.service.d
+
+cat > /etc/systemd/system/nginx.service.d/limits.conf <<'EOF'
+[Service]
+LimitNOFILE=1048576
+TasksMax=infinity
+EOF
+
+systemctl daemon-reload
+
+systemctl restart ssh
+systemctl restart ssh-ws
+systemctl restart nginx
+
+# ============================================================
+# FIREWALL INFORMATION
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 12. PORT CHECK"
+echo "============================================================"
+
+echo
+echo "Pastikan firewall provider/VPS membuka:"
+echo
+echo "TCP 22"
+echo "TCP 80"
+echo "TCP 443"
+echo
+
+# ============================================================
+# LOCAL BRIDGE TEST
+# ============================================================
+
+echo
+echo "============================================================"
+echo " 13. TEST LOCAL SSH BRIDGE"
+echo "============================================================"
+echo
+
+TEST_OUTPUT="$(
+    timeout 3 bash -c "
+        printf 'PATCH / HTTP/1.1\r\nHost: $DOMAIN\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n' |
+        nc 127.0.0.1 $WS_PORT
+    " 2>/dev/null || true
+)"
+
+echo "$TEST_OUTPUT" | head -10
+
+if echo "$TEST_OUTPUT" \
+    | grep -q "101 Switching Protocols"; then
+
+    echo
+    echo "[OK] HTTP Upgrade 101 berhasil."
+
+else
+
+    echo
+    echo "[WARNING] 101 tidak terdeteksi."
+
 fi
 
-clear
+if echo "$TEST_OUTPUT" \
+    | grep -q "SSH-2.0-OpenSSH"; then
 
-section "INSTALL SELESAI"
+    echo "[OK] OpenSSH banner berhasil."
+else
+    echo "[WARNING] OpenSSH banner tidak terdeteksi."
+fi
 
-echo "Host IP              : $IP"
-echo "Host Domain          : $DOMAIN"
-echo
-echo "Username SSH         : $USERNAME"
-echo "Password SSH         : $PASSWORD"
-echo
-echo "OpenSSH              : 22"
-echo "Dropbear             : 442"
-echo "SSH WS               : 80"
-echo "SSH WSS              : 443"
-echo
-echo "Squid                : 3128 / 8000 / 8080"
-echo
-echo "OpenVPN UDP          : 1194"
-echo "OpenVPN TCP          : 443"
-echo
-echo "BadVPN               : 7100 / 7200 / 7300 / 7400 / 7500"
-echo
-echo "OVPN UDP             : /root/ovpn/openvpn-1194.ovpn"
-echo "OVPN TCP             : /root/ovpn/openvpn-443.ovpn"
-
-echo
-echo "PAYLOAD WS:"
-echo
-echo "GET / HTTP/1.1[crlf]Host: $DOMAIN[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]"
-
-echo
-echo "PAYLOAD WSS:"
-echo
-echo "GET wss://$DOMAIN/ HTTP/1.1[crlf]Host: $DOMAIN[crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]"
-
-echo
-echo "SNI: $DOMAIN"
-
-section "LISTEN PORT"
-
-ss -lntup |
-grep -E \
-':(22|80|443|442|1194|1195|3128|8000|8080|7100|7200|7300|7400|7500|8443|10080)\b' \
-|| true
-
-section "SERVICE STATUS"
-
-for SERVICE in \
-    ssh \
-    dropbear \
-    ssh-websocket \
-    nginx \
-    squid \
-    sslh \
-    openvpn-server@udp1194 \
-    openvpn-server@tcp443 \
-    badvpn-7100 \
-    badvpn-7200 \
-    badvpn-7300 \
-    badvpn-7400 \
-    badvpn-7500
-do
-
-    printf "%-32s : " "$SERVICE"
-
-    if systemctl is-active --quiet "$SERVICE"; then
-        echo "ACTIVE"
-    else
-        echo "FAILED"
-    fi
-
-done
+# ============================================================
+# SERVICE CHECK
+# ============================================================
 
 echo
 echo "============================================================"
-echo " SSH LOGIN"
+echo " 14. SERVICE STATUS"
 echo "============================================================"
 echo
-echo "ssh $USERNAME@$DOMAIN -p 22"
+
+printf "%-12s : " "SSH"
+
+if systemctl is-active --quiet ssh; then
+    echo "ACTIVE"
+else
+    echo "FAILED"
+fi
+
+printf "%-12s : " "SSH-WS"
+
+if systemctl is-active --quiet ssh-ws; then
+    echo "ACTIVE"
+else
+    echo "FAILED"
+fi
+
+printf "%-12s : " "NGINX"
+
+if systemctl is-active --quiet nginx; then
+    echo "ACTIVE"
+else
+    echo "FAILED"
+fi
+
 echo
-echo "Username : $USERNAME"
-echo "Password : $PASSWORD"
+echo "Listening ports:"
 echo
+
+ss -lntp \
+    | grep -E ':22 |:80 |:443 |:8880 ' \
+    || true
+
+# ============================================================
+# FINISH
+# ============================================================
+
+echo
+echo
+echo "============================================================"
+echo "               INSTALLATION SELESAI"
+echo "============================================================"
+echo
+echo "DOMAIN"
+echo "  $DOMAIN"
+echo
+echo "IP VPS"
+echo "  ${SERVER_IP:-UNKNOWN}"
+echo
+echo "OPENSSH"
+echo "  Host     : $DOMAIN"
+echo "  Port     : 22"
+echo "  Username : $USERNAME"
+echo "  Password : $PASSWORD"
+echo
+echo "SSH WS TLS"
+echo "  Host     : $DOMAIN"
+echo "  Port     : 443"
+echo "  Username : $USERNAME"
+echo "  Password : $PASSWORD"
+echo "  SNI      : $DOMAIN"
+echo
+echo "SSH WS NON-TLS"
+echo "  Host     : $DOMAIN"
+echo "  Port     : 80"
+echo
+echo "============================================================"
+echo " HTTP CUSTOM"
+echo "============================================================"
+echo
+echo "SSH:"
+echo "$DOMAIN:443@$USERNAME:$PASSWORD"
+echo
+echo "Proxy:"
+echo "104.17.70.206:80"
+echo
+echo "Payload:"
+echo
+echo 'GET / HTTP/1.1[crlf]Host: edu.ruangguru.com[crlf][crlf]PATCH / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf][split]HTTP/ 69[crlf][crlf]'
+echo
+echo "============================================================"
+echo " MONITOR"
+echo "============================================================"
+echo
+echo "journalctl -u ssh-ws -f"
+echo
+echo "tail -f /var/log/nginx/access.log /var/log/nginx/error.log"
+echo
+echo "============================================================"
+INSTALLER
+
+chmod +x /root/install-ssh-ws.sh
+bash /root/install-ssh-ws.sh
