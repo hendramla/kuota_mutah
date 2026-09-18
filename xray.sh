@@ -123,9 +123,17 @@ echo "============================================================"
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": {
-    "loglevel": "warning",
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log"
+    "loglevel": "none"
+  },
+
+  "dns": {
+    "queryStrategy": "UseIPv4",
+    "servers": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "8.8.8.8",
+      "8.8.4.4"
+    ]
   },
 
   "inbounds": [
@@ -201,7 +209,10 @@ cat > /usr/local/etc/xray/config.json <<EOF
   "outbounds": [
     {
       "tag": "direct",
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      }
     },
     {
       "tag": "blocked",
@@ -337,7 +348,6 @@ upstream xray_vmess {
 
 server {
     listen 80;
-    listen [::]:80;
 
     server_name ${DOMAIN};
 
@@ -354,7 +364,6 @@ server {
     server_name ${DOMAIN};
 
     listen 443 ssl http2 reuseport;
-    listen [::]:443 ssl http2 reuseport;
 
     server_tokens off;
 
@@ -460,7 +469,7 @@ server {
     ssl_certificate_key "/etc/letsencrypt/live/${DOMAIN}/privkey.pem";
     ssl_trusted_certificate "/etc/letsencrypt/live/${DOMAIN}/chain.pem";
 
-    resolver 1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 valid=60s;
+    resolver 1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 ipv6=off valid=60s;
     resolver_timeout 2s;
 
     # ========================================================
