@@ -240,22 +240,68 @@ else
 fi
 
 # ============================================================
-# XRAY LIMIT
+# XRAY SYSTEMD SERVICE + HIGH CONNECTION LIMIT
 # ============================================================
 
+echo
+echo "============================================================"
+echo " 6A. CONFIGURE XRAY SYSTEMD SERVICE"
+echo "============================================================"
+
+# Jika service sudah ada -> diperbarui.
+# Jika belum ada -> dibuat.
+cat > /etc/systemd/system/xray.service <<'EOF'
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+
+Restart=on-failure
+RestartSec=2s
+RestartPreventExitStatus=23
+
+LimitNOFILE=1000000
+LimitNPROC=10000
+
+RuntimeDirectory=xray
+RuntimeDirectoryMode=0755
+
+KillMode=mixed
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Drop-in memastikan limit tinggi tetap berlaku.
 mkdir -p /etc/systemd/system/xray.service.d
 
 cat > /etc/systemd/system/xray.service.d/override.conf <<'EOF'
 [Service]
+# File descriptors / concurrent connections
 LimitNOFILE=1048576
-LimitNPROC=1048576
+
+# Process / thread limit
+LimitNPROC=65535
+
+# Automatic restart
 Restart=always
 RestartSec=3s
+
+# Allow long-running connections
+TimeoutStopSec=10s
 EOF
 
 systemctl daemon-reload
 systemctl enable xray
-systemctl restart xray
 
 # ============================================================
 # REMOVE DEFAULT NGINX
@@ -548,22 +594,39 @@ echo " 11. NETWORK OPTIMIZATION"
 echo "============================================================"
 
 cat > /etc/sysctl.d/99-xray.conf <<'EOF'
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
+# ==========================================
+# XRAY HIGH CONNECTION TUNING
+# ==========================================
 
-net.core.somaxconn=65535
-net.core.netdev_max_backlog=16384
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 
-net.ipv4.tcp_max_syn_backlog=8192
-net.ipv4.tcp_fin_timeout=30
-net.ipv4.tcp_keepalive_time=600
-net.ipv4.tcp_keepalive_intvl=30
-net.ipv4.tcp_keepalive_probes=5
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_max_syn_backlog = 8192
 
-fs.file-max=2097152
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+
+fs.file-max = 2097152
+
+net.ipv4.ip_local_port_range = 10240 65535
+
+net.ipv4.tcp_tw_reuse = 1
+
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+
+net.ipv4.tcp_mtu_probing = 1
+
+net.ipv4.tcp_syncookies = 1
 EOF
 
+# Terapkan seluruh sysctl tanpa bergantung pada service procps.
 sysctl --system >/dev/null 2>&1 || true
+
 
 # ============================================================
 # CREATE VMESS LINK
@@ -726,6 +789,4 @@ cat /root/xray-account.txt
 
 INSTALLER
 
-chmod +x /root/install-xray.sh
 
-/root/install-xray.sh
