@@ -240,16 +240,9 @@ else
 fi
 
 # ============================================================
-# XRAY SYSTEMD SERVICE + HIGH CONNECTION LIMIT
+# XRAY LIMIT
 # ============================================================
 
-echo
-echo "============================================================"
-echo " 6A. CONFIGURE XRAY SYSTEMD SERVICE"
-echo "============================================================"
-
-# Jika service sudah ada -> diperbarui.
-# Jika belum ada -> dibuat.
 cat > /etc/systemd/system/xray.service <<'EOF'
 [Unit]
 Description=Xray Service
@@ -281,11 +274,11 @@ TimeoutStopSec=10s
 WantedBy=multi-user.target
 EOF
 
-# Drop-in memastikan limit tinggi tetap berlaku.
 mkdir -p /etc/systemd/system/xray.service.d
 
 cat > /etc/systemd/system/xray.service.d/override.conf <<'EOF'
 [Service]
+
 # File descriptors / concurrent connections
 LimitNOFILE=1048576
 
@@ -302,6 +295,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable xray
+systemctl restart xray
 
 # ============================================================
 # REMOVE DEFAULT NGINX
@@ -624,9 +618,8 @@ net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_syncookies = 1
 EOF
 
-# Terapkan seluruh sysctl tanpa bergantung pada service procps.
+service procps force-reload
 sysctl --system >/dev/null 2>&1 || true
-
 
 # ============================================================
 # CREATE VMESS LINK
@@ -789,4 +782,6 @@ cat /root/xray-account.txt
 
 INSTALLER
 
+chmod +x /root/install-xray.sh
 
+/root/install-xray.sh
