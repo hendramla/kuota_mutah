@@ -142,6 +142,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "listen": "127.0.0.1",
       "port": ${TROJAN_PORT},
       "protocol": "trojan",
+
       "settings": {
         "clients": [
           {
@@ -150,11 +151,20 @@ cat > /usr/local/etc/xray/config.json <<EOF
           }
         ]
       },
+
       "streamSettings": {
         "network": "ws",
         "security": "none",
+
+        "sockopt": {
+          "tcpKeepAliveIdle": 30,
+          "tcpKeepAliveInterval": 15,
+          "tcpUserTimeout": 120000
+        },
+
         "wsSettings": {
-          "path": "${TROJAN_PATH}"
+          "path": "${TROJAN_PATH}",
+          "heartbeatPeriod": 30
         }
       }
     },
@@ -164,6 +174,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "listen": "127.0.0.1",
       "port": ${VLESS_PORT},
       "protocol": "vless",
+
       "settings": {
         "clients": [
           {
@@ -173,11 +184,20 @@ cat > /usr/local/etc/xray/config.json <<EOF
         ],
         "decryption": "none"
       },
+
       "streamSettings": {
         "network": "ws",
         "security": "none",
+
+        "sockopt": {
+          "tcpKeepAliveIdle": 30,
+          "tcpKeepAliveInterval": 15,
+          "tcpUserTimeout": 120000
+        },
+
         "wsSettings": {
-          "path": "${VLESS_PATH}"
+          "path": "${VLESS_PATH}",
+          "heartbeatPeriod": 30
         }
       }
     },
@@ -187,6 +207,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "listen": "127.0.0.1",
       "port": ${VMESS_PORT},
       "protocol": "vmess",
+
       "settings": {
         "clients": [
           {
@@ -196,11 +217,20 @@ cat > /usr/local/etc/xray/config.json <<EOF
           }
         ]
       },
+
       "streamSettings": {
         "network": "ws",
         "security": "none",
+
+        "sockopt": {
+          "tcpKeepAliveIdle": 30,
+          "tcpKeepAliveInterval": 15,
+          "tcpUserTimeout": 120000
+        },
+
         "wsSettings": {
-          "path": "${VMESS_PATH}"
+          "path": "${VMESS_PATH}",
+          "heartbeatPeriod": 30
         }
       }
     }
@@ -210,10 +240,23 @@ cat > /usr/local/etc/xray/config.json <<EOF
     {
       "tag": "direct",
       "protocol": "freedom",
+
       "settings": {
         "domainStrategy": "UseIPv4"
+      },
+
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv4",
+          "tcpKeepAliveIdle": 45,
+          "tcpKeepAliveInterval": 15,
+          "tcpUserTimeout": 120000,
+          "tcpFastOpen": true,
+          "tcpcongestion": "bbr"
+        }
       }
     },
+
     {
       "tag": "blocked",
       "protocol": "blackhole"
